@@ -1,0 +1,203 @@
+---
+title: "ONT Data Processing QC"
+author: "Nate Olson"
+date: "4/2/2019"
+output: html_document
+---
+```{r}
+library(tidyverse)
+```
+
+Run sanity checks for data processing to make sure expected basecalling and mapping output for each fast5 tar
+- Fastq file for every fast5 - compare fastq_list.txt to fast5_list.txt
+## fast5 - fastq file checks
+
+```{r}
+fast5_df <- read_lines("ONT-pipe-run-logs/pipeline_qc/fast5_list.txt") %>% 
+    keep(str_detect, "-rw") %>%
+    discard(str_detect,"pipeline.log") %>% 
+    str_sub( start = 27) %>%
+    str_replace("(?<=M|G|K|[:digit:])\\s.*201[78]\\s","&") %>%
+    str_remove("it\\s|t\\s") %>%
+    str_replace("(?<=M|G|K|[:digit:])\\s.*[:digit:][:digit:]:[:digit:][:digit:]", "&") %>%
+    enframe(name = NULL) %>%
+    separate(value, into = c("fast5_size","fast5_name"), sep = "&") %>% 
+    mutate(base_name = str_remove(fast5_name, ".tar"),
+           base_name = str_remove(base_name, ".*/fast5/"),
+           base_name = str_trim(base_name))
+```
+
+```{r}
+fastq_df <- read_lines("ONT-pipe-run-logs/pipeline_qc/fastq_list.txt") %>% 
+    keep(str_detect, "fastq.gz") %>%
+    discard(str_detect, "txt|tsv|combined|log|js") %>% 
+    str_sub( start = 27) %>%
+    str_replace("(?<=M|G|K|[:digit:])\\s.*201[78]\\s","&") %>%
+    str_remove("it\\s|t\\s") %>%
+    str_replace("(?<=M|G|K|[:digit:])\\s.*[:digit:][:digit:]:[:digit:][:digit:]", "&") %>%
+    enframe(name = NULL) %>%
+    separate(value, into = c("fastq_size","fastq_name"), sep = "&") %>% 
+    mutate(base_name = str_remove(fastq_name, ".fastq.gz"),
+           base_name = str_remove(base_name, ".*/fastq/"),
+           base_name = str_trim(base_name)) 
+```
+
+### Check for missing fastq files
+
+- missing files likely from old fastq list
+- need to double check `_*_` Ashley files
+```{r}
+fastq_df %>% full_join(fast5_df) %>% filter(is.na(fastq_name)) %>% 
+   # select(base_name) %>%
+   # mutate(base_name = str_remove(base_name, "_[:digit:]{1,2}_[:digit:]")) %>%
+    distinct()
+```
+
+
+
+## Bam 37 and bam 38 for every fastq 
+- compare aln37_list.txt and aln38_list.txt to fastq_list.txt
+```{r}
+aln37_df <- read_lines("ONT-pipe-run-logs/pipeline_qc/aln37_list.txt") %>% 
+    keep(str_detect, "bam") %>%
+    discard(str_detect, "txt|tsv|combined|log|js|bai") %>% 
+    str_sub( start = 27) %>%
+    str_replace("(?<=M|G|K|[:digit:])\\s.*201[78]\\s","&") %>%
+    str_remove("it\\s|t\\s") %>%
+    str_replace("(?<=M|G|K|[:digit:])\\s.*[:digit:][:digit:]:[:digit:][:digit:]", "&") %>%
+    enframe(name = NULL) %>%
+    separate(value, into = c("aln37_size","aln37_name"), sep = "&") %>% 
+    mutate(base_name = str_remove(aln37_name, ".fastq.sorted.bam"),
+           base_name = str_remove(base_name, ".*/aln_hs37d5/"),
+           base_name = str_trim(base_name)) 
+```
+
+```{r}
+aln38_df <- read_lines("ONT-pipe-run-logs/pipeline_qc/aln38_list.txt") %>% 
+    keep(str_detect, "bam") %>%
+    discard(str_detect, "txt|tsv|combined|log|js|bai") %>% 
+    str_sub( start = 27) %>%
+    str_replace("(?<=M|G|K|[:digit:])\\s.*201[78]\\s","&") %>%
+    str_remove("it\\s|t\\s") %>%
+    str_replace("(?<=M|G|K|[:digit:])\\s.*[:digit:][:digit:]:[:digit:][:digit:]", "&") %>%
+    enframe(name = NULL) %>%
+    separate(value, into = c("aln38_size","aln38_name"), sep = "&") %>% 
+    mutate(base_name = str_remove(aln38_name, ".fastq.sorted.bam"),
+           base_name = str_remove(base_name, ".*/aln_GRCh38/"),
+           base_name = str_trim(base_name)) 
+```
+
+
+### Check for missing bam files
+- numerous missing alignment files - need to check directory and rerun pipeline if necessary
+```{r}
+fastq_df %>% full_join(aln37_df) %>% full_join(aln38_df) %>% 
+     filter(is.na(aln37_name)| is.na(aln38_name)) #%>% 
+   # select(base_name) %>%
+  # mutate(base_name = str_remove(base_name, "_[:digit:]{1,2}_[:digit:][:digit:]"),
+        #  base_name = str_remove(base_name, "_[:digit:]{1,2}_[:digit:]")) %>%
+   #group_by(base_name, aln37_name, aln38_name) %>% 
+#    summarise(count = n())
+```
+
+
+```{r}
+fastq_df %>% full_join(aln37_df) %>% full_join(aln38_df)
+```
+
+
+## Fastq pass rate 
+- number of reads that pass and fail basecalling
+```{r}
+fq_pass <- read_tsv("ONT-pipe-run-logs/pipeline_qc/basecalling_rate_info.tsv") %>% 
+    mutate(base_name = str_extract(summary_file, "(?<=fastq/).*(?=.fastq)")) %>% 
+    mutate(total = str_remove(total, "/scratch.*"),
+           total = as.integer(total) - 1) %>%  # subtracting 1 from line count for header
+    mutate(pass_rate = pass/(pass + fail))
+```
+Looks like the parsing issue is related to Ashley fastq summary seqs - may need to rerun
+```{r}
+read_lines("ONT-pipe-run-logs/pipeline_qc/basecalling_rate_info.tsv")[3763:3765]
+```
+
+```{r}
+fq_pass %>% 
+ggplot() + geom_histogram(aes(x = total)) + 
+    scale_x_log10() + 
+    scale_y_log10() + 
+    annotation_logticks(sides = "bl") +
+    theme_bw() +
+    labs(x = "Number of Sequences", y = "Count")
+``` 
+
+Low seq numbers to check
+```{r}
+fq_pass %>% filter(total == 0)
+```
+
+```{r}
+fq_pass  %>% 
+    ggplot() + geom_density(aes(x = pass_rate)) +
+    theme_bw()
+```
+
+Basecalling pass rate not correlated with the number of reads per fast5 tar ball.
+```{r}
+fq_pass  %>% 
+    ggplot() + 
+    geom_hex(aes(x = total, y = pass_rate)) +
+    scale_x_log10() + 
+    theme_bw()
+```
+
+## 37 and 38 align rate 
+- script mapping_rate_info.sh - output mapping_info.txt
+
+```{r}
+align_raw_df <- read_tsv("ONT-pipe-run-logs/pipeline_qc/mapping_info.txt", 
+                     col_names = c("batch_name", "genome","length","n_align","n_not_align")) %>% 
+    mutate(genome = if_else(genome == "*", "unaligned", genome))
+n_aligned_df <- align_raw_df %>% filter(genome != "unaligned") %>% 
+    select(batch_name, genome, length, n_align)
+n_unaligned_df <- align_raw_df %>% filter(genome == "unaligned") %>% 
+    select(batch_name, n_not_align)
+align_df <- full_join(n_aligned_df, n_unaligned_df) 
+```
+
+```{r}
+read_prob_df <- read_tsv("ONT-pipe-run-logs/pipeline_qc/mapping_info.txt", 
+                     col_names = c("batch_name", "genome","length","n_align","n_not_align")) %>% 
+    problems()
+```
+
+```{r}
+read_lines("ONT-pipe-run-logs/pipeline_qc/mapping_info.txt")[read_prob_df$row] %>% 
+    str_remove("/output.*") %>% 
+    table()
+```
+
+The fraction of aligned reads centers around 50\%. This seems low. Might want to consider revising mapping parameters.
+```{r}
+align_df %>% mutate(frac_align = n_align/(n_not_align + n_align)) %>% 
+    ggplot() + geom_density(aes(x = frac_align)) + theme_bw()
+```
+
+
+## Header check - script get_mapping_header.sh - output mapping_header.txt - need to analyze
+Note only has 1500 rows ...
+```{r}
+map_head_df <- read_lines("ONT-pipe-run-logs/pipeline_qc/mapping_header.txt") %>% 
+    keep(str_detect, "mapping.*out") %>% 
+    enframe(name = NULL) %>% 
+    separate(value, into = c("log_file", "RG", "ID", "PU", "PL", "PM",
+                             "LB", "DT", "PG", "DS", "SM"), sep = "\t")
+```
+
+```{r}
+map_head_df[c(52, 216),]
+```
+
+Header checks - empty rows, ...
+
+
+Lines for err and out log files - in pipeline qc page in OneNote
