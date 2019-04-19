@@ -1,0 +1,22 @@
+---
+title: "fast5 tar file size comparison"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+```
+
+```{r}
+minion2 <- read_table("minion2.txt", col_names = FALSE) %>% 
+    select(X5, X9) %>% 
+    rename(minion_size = X5, filename = X9)
+
+oak <- read_table("oak.txt", col_names = FALSE) %>% 
+    select(X5, X9) %>% 
+    rename(oak_size = X5, filename = X9)
+full_join(minion2, oak) %>% 
+    select(filename, minion_size, oak_size)
+```
+
+

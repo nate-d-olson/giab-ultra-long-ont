@@ -1,0 +1,109 @@
+---
+title: "Nanopore raw directory clean-up"
+output: html_notebook
+---
+
+
+
+```{r}
+library(tidyverse)
+library(readxl)
+```
+
+```{r}
+nano_dir <- read_excel("~/Desktop/20180212_nano_raw_cleanup_list.xlsx")
+```
+
+```{r}
+dir_types <- nano_dir %>% 
+    group_by(results, aln, fast5, fastq) %>% 
+    summarise(count = n()) %>% 
+    arrange(-count)
+```
+
+```{r}
+dir_types
+```
+## Actions
+- directories with fast5, fastq, and aln - make sure fastq and bam for each fast5
+- fast5 only - look into why they were not processed
+
+```{r}
+dir_types %>% left_join(nano_dir) %>% filter(count == 13)
+```
+
+- aln and fastq only - make sure these are from collaborators
+```{r}
+dir_types %>% left_join(nano_dir) %>% filter(count == 6)
+```
+
+- No sub-directories/ empty sub-directories
+```{r}
+dir_types %>% left_join(nano_dir) %>% filter(count == 5)
+```
+
+
+- Misc.
+```{r}
+dir_types %>% left_join(nano_dir) %>% filter(count < 3)
+```
+
+## fast5 - fastq file checks
+
+```{r}
+fast5_df <- read_lines("raw_fast5_list.txt") %>% 
+    keep(str_detect, "-rw") %>%
+    discard(str_detect,"pipeline.log") %>% 
+    str_sub( start = 27) %>%
+    str_replace("(?<=M|G|K|[:digit:])\\s.*201[78]\\s","&") %>%
+    str_remove("it\\s|t\\s") %>%
+    str_replace("(?<=M|G|K|[:digit:])\\s.*[:digit:][:digit:]:[:digit:][:digit:]", "&") %>%
+    as_tibble() %>%
+    separate(value, into = c("fast5_size","fast5_name"), sep = "&") %>% 
+    mutate(base_name = str_remove(fast5_name, ".tar"))
+```
+
+
+```{r}
+fastq_df <- read_lines("raw_fastq_list.txt") %>% 
+    keep(str_detect, "fastq.gz") %>%
+    discard(str_detect, "txt|tsv|combined") %>% 
+    str_sub( start = 27) %>%
+    str_replace("(?<=M|G|K|[:digit:])\\s.*201[78]\\s","&") %>%
+    str_remove("it\\s|t\\s") %>%
+    str_replace("(?<=M|G|K|[:digit:])\\s.*[:digit:][:digit:]:[:digit:][:digit:]", "&") %>%
+    as_tibble() %>%
+    separate(value, into = c("fastq_size","fastq_name"), sep = "&") %>% 
+    mutate(base_name = str_remove(fastq_name, ".fastq.gz")) 
+```
+
+
+Check for missing fastq files
+```{r}
+fastq_df %>% full_join(fast5_df) %>% filter(is.na(fastq_name)) %>% 
+    select(base_name) %>% 
+    mutate(base_name = str_remove(base_name, "_[:digit:]{1,2}_[:digit:]")) %>% 
+    distinct()
+```
+
+## Runs without fast5s missing fastqs
+- HalfPrecipxyz
+- FAK27084_ - I believe this is a prometion run or from the new version of MinKNOW
+- gm24385_181004DNA1F - known issue with tars with lowercase and capital F
+
+Look into the following
+- gm24385_180207DNA2a - Known issue typo in run name
+- gm24385_180807DNA1b - need to check for basecalling errors
+- gm24385_180807DNA1c - need to check for basecalling errors
+- gm24385_180807DNA1a - need to check for basecalling errors
+- gm24385_181001DNA1a - known issue not entered in database correctly
+
+
+## Runs with small or missing fastqs
+Most small fastqs are from small fast5s
+Check gm24385_180807DNA1b, gm24385_181205DNA2b_0, and gm24385_181205DNA2b_1 fastq files
+```{r}
+fastq_df %>% full_join(fast5_df) %>% 
+    filter(!str_detect(fastq_size, "K|M"))
+```
+
