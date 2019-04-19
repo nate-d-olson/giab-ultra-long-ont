@@ -1,0 +1,448 @@
+---
+title: "Nanopore Sequencing Summary"  
+author: "Nate Olson"  
+date: '`r Sys.Date()`'  
+output:  
+  bookdown::html_document2:
+    code_folding: hide  
+    theme: yeti  
+    toc: yes  
+    toc_float: yes  
+---  
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(googlesheets)
+library(lubridate)
+library(DT)
+library(trelliscopejs)
+library(plotly)
+```
+
+# Overview
+Nanopore sequencing of the GIAB HG002 was performed at three sites, JIMB, NOTT, and BIRM. 
+The following analysis summarizes the sequencing runs generated at the sites comparing run throughput, N50, and coverage by read length. 
+Sequence metrics were calculated from the alignment files (CRAM). 
+Therefore the run metrics is likely lower than metrics calculated from the basecall sequence files (fastq).
+
+__Nanopore sequencing platforms__  
+
+- Minion (https://nanoporetech.com/products/minion)  
+    - Up to 512 nanopore channels   
+- Gridion (https://nanoporetech.com/products/gridion)  
+    - Up to 5 Minion flow cells in parallel  
+- Promethion (https://nanoporetech.com/products/promethion)  
+    - 48 flow cells  
+    - Flow cells have up to 3,000 nanopore channels  
+
+
+# Data Preparation 
+Downloading run metadata from googlesheet.
+```{r metadata, message = FALSE, warning = FALSE}
+nanopore_gs <- gs_title("Nanopore runs")
+jimb_metadata <- nanopore_gs %>%
+  gs_read(ws = "GM24385")
+nott_metadata <- nanopore_gs %>% 
+    gs_read(ws = "Nott")
+```
+
+Pulling alignment statistics from stanford oak filesystem, 
+requires mounting stanford oak filesystem as `stanford_oak` directory.  
+
+The data were saved locally to make it easier to re-compile Rmarkdown. 
+```{r loadData, message = FALSE}
+stat_files <- list.files("stats/", 
+                         pattern = ".*stats.tsv.gz", full.names = TRUE,
+                         recursive = TRUE)
+
+# BAM statistics combined bam stat files
+col_names <- c("read_id", 
+               "aln_lengthsum", 
+               "aln_lengthmax",
+               "aln_count",
+               "ref_lengthsum",
+               "ref_lengthmax",
+               "ref_lengthcount",
+               "bases")
+
+aln_stat_files <- grep("/aln_GRCh38/", stat_files, value = TRUE)
+aln_names <- str_extract(aln_stat_files, "(?<=stats//).*(?=/aln)")
+aln_stat_df <- aln_stat_files %>%  
+    set_names(aln_names) %>% 
+    map_dfr(read_tsv, 
+            .id = "Run")
+```
+
+
+# Calculating Run Statistics
+
+Run statistics calculated using alignment lengths from bam statistic files.  
+
+__Run Statistics__  
+- N50 in Kb, length of read where shorter reads represent half the run half the run throughput. 
+- Throughput in Mb total length of aligned reads.
+- Coverage by read length thresholds: all, 50kb, 100kb, 250kb, 5000kb. 
+
+
+```{r calc_metrics}
+## Coverage by length bins
+cov_breaks <- c(0,50000,100000, 250000, 500000)
+cov_df <- aln_stat_df %>% 
+    mutate(length_bins = cut(aln_lengthmax, 
+                             breaks = c(cov_breaks, max(.$aln_lengthmax)),
+                             labels = cov_breaks)) %>%
+    group_by(Run, length_bins) %>% 
+    summarise(coverage = sum(as.numeric(aln_lengthmax))/3.1e9,
+              n_reads = n()) %>% 
+    group_by(Run) %>% 
+    arrange(desc(length_bins)) %>% 
+    mutate(cum_coverage = cumsum(coverage)) %>% 
+    mutate(length_bins = as.numeric(as.character(length_bins)))
+
+nested_cov_df <- cov_df %>% group_by(Run) %>% nest()
+
+## N50 and throughput
+calc_n50 <- function(seq_lengths){
+    sorted_lengths <- sort(seq_lengths)
+    cum_lengths <- cumsum(sorted_lengths)
+    min(sorted_lengths[cum_lengths >= max(cum_lengths)*0.5])
+}
+
+aln_summary_stats_df <- aln_stat_df %>% 
+    mutate(aln_lengthmax = as.numeric(aln_lengthmax)) %>% 
+    group_by(Run) %>% 
+    summarise(N50 = calc_n50(aln_lengthmax),
+           throughput = sum(aln_lengthmax))
+
+# Annotating with run metadata
+jimb_run_metrics <- jimb_metadata %>% 
+    filter(!is.na(Run)) %>% 
+    select(-N50) %>% 
+    left_join(aln_summary_stats_df) %>% 
+    mutate(Date = mdy(Date)) %>% 
+    filter(!is.na(N50)) %>% 
+    mutate(lab = "JIMB", platform = "minion")
+
+nott_run_metrics <- nott_metadata %>%
+    mutate(Date = mdy(Date)) %>%
+    left_join(aln_summary_stats_df) %>% 
+    mutate(lab = "NOTT",
+           platform = case_when(str_detect(Run, "_UB_") ~ "gridion",
+                                str_detect(Run, "Prom") ~ "promethion",
+                                TRUE ~ "minion"),
+           lab = if_else(platform == "gridion", "BIRM", lab))
+
+run_metrics_df <- bind_rows(nott_run_metrics, jimb_run_metrics) %>%
+    rename(Flowcell = `Flowcell ID`) %>% 
+    select(lab, platform, Flowcell, Date, Run, 
+           N50, throughput, optimized_protocol) %>% 
+    mutate(N50 = N50/1e3, throughput = throughput/1e6) %>% 
+    left_join(nested_cov_df)
+```
+
+
+# Run summaries
+Read length distributions were similar across runs. 
+The x-axis scales vary in the following plots making it hard to compare runs. 
+In general runs with distributions shifted to the right have shorter reads. 
+
+```{r read_length_dist, message = FALSE, eval = FALSE}
+aln_stat_df %>% group_by(Run) %>% 
+    nest() %>%
+    mutate(panel = map_plot(data, ~ ggplot(.) + 
+                                       geom_histogram(aes(x = aln_lengthmax)) +
+                                       theme_bw())) %>%
+  trelliscope(name = "Read Length Distribution", nrow = 2, ncol = 2, 
+              self_contained = TRUE)
+```
+
+
+## JIMB Run Summary
+Variation in N50 and throughput during JIMB run optimization. 
+Most recent runs have high throughput and N50. 
+
+Orange points represent runs performed using the optimized protocol.
+```{r message = FALSE}
+scatter_dat <- run_metrics_df %>% filter(lab == "JIMB")
+ggplot(scatter_dat) + 
+    geom_point(aes(x = Date, y = N50)) + 
+    geom_point(data = filter(scatter_dat, optimized_protocol == 1), 
+               aes(x = Date, y = N50), color = "darkorange") + 
+    geom_smooth(aes(x = Date, y = N50)) + 
+    geom_hline(aes(yintercept = 100), linetype = 2) +
+    theme_bw() +
+    labs(y = "N50 (Kb)")
+```
+
+```{r fig.cap = "Throughput over time.", message = FALSE}
+scatter_dat <- run_metrics_df %>% filter(lab == "JIMB")
+ggplot(scatter_dat) + 
+    geom_point(aes(x = Date, y = throughput)) + 
+    geom_smooth(aes(x = Date, y = throughput)) + 
+        geom_point(data = filter(scatter_dat, optimized_protocol == 1), 
+               aes(x = Date, y = throughput), color = "darkorange") + 
+    theme_bw() + 
+    scale_y_log10() + 
+    labs(y = "Throughput (Mb)")
+```
+
+
+```{r fig.cap = "Throughput normalized by flowcell pores", message = FALSE}
+pore_counts <- jimb_metadata %>%
+    select(`Flowcell ID`, Date, `Flowcell Well Count`) %>% 
+    dplyr::rename(Flowcell = `Flowcell ID`, 
+                  pore_num = `Flowcell Well Count`) %>% 
+    group_by(Flowcell) %>% 
+    summarise(pore_num = as.numeric(max(pore_num))) %>% 
+    filter(!is.na(pore_num))
+
+run_metrics_df %>% filter(lab == "JIMB") %>% 
+    right_join(pore_counts) %>% 
+    ggplot() + 
+    geom_point(aes(x = Date, y = throughput/pore_num)) + 
+    geom_smooth(aes(x = Date, y = throughput/pore_num)) + 
+    theme_bw() + 
+    scale_y_log10() + 
+    labs(y = "Throughput (Mb)/Pores")
+```
+```{r}
+long_scatter_dat <- scatter_dat %>% 
+    select(Date, Run, N50, throughput) %>% 
+    mutate(throughput = log10(throughput)) %>% 
+    gather("Stat","Value", -Date, -Run)
+
+ggplot(long_scatter_dat) + 
+    geom_smooth(aes(x = Date, y = Value)) + 
+    geom_point(data = filter(long_scatter_dat, Date < "2018-07-22"),
+               aes(x = Date, y = Value)) + 
+    geom_point(data = filter(long_scatter_dat, Date > "2018-07-20"), 
+               aes(x = Date, y = Value), color = "darkorange") + 
+    theme_bw() +
+    facet_wrap(~Stat, ncol = 1, scales = "free_y") + 
+    labs(y = "Statistic")
+```
+
+```{r}
+## Remove??? - not sure it is needed
+## scatter_dat <- run_metrics_df %>% filter(lab == "JIMB") %>% 
+##    gather()
+
+```
+
+
+# N50 and Throughput Lab Comparison
+NOTT runs have consistently high throughput but lower N50. 
+JIMB runs from July have high N50 and throughput.
+
+```{r fig.cap = "Relationship between throughput and N50. "}
+plt <- run_metrics_df %>% 
+    ggplot(aes(text = paste("Date:", Date))) + 
+    geom_point(aes(x = throughput, y = N50, color = lab, shape = platform)) + 
+    scale_x_log10() + 
+    scale_color_brewer(palette = 2, type = "qual") +
+    theme_bw() + 
+    labs(x = "Throughput (Mb)", y = "N50 (Kb)", 
+         shape = "Platform", color = "Lab") + 
+    theme(legend.position = "bottom")
+
+ggplotly(plt)
+```
+
+```{r fig.cap = "Relationship between throughput and N50 for 10 latest runs for each lab."}
+plt <- run_metrics_df %>% group_by(lab) %>% top_n(n = 10, wt = Date) %>% 
+    ggplot(aes(text = paste("Date:", Date))) + 
+        geom_point(aes(x = throughput, y = N50, 
+                       color = lab, shape = platform)) + 
+        scale_x_log10() + 
+        scale_color_brewer(palette = 2, type = "qual") +
+        theme_bw() + 
+        labs(x = "Throughput (Mb)", y = "N50 (Kb)", 
+             shape = "Platform", color = "Lab")  + 
+    theme(legend.position = "bottom")
+
+ggplotly(plt)
+```
+
+
+```{r}
+run_metrics_df %>% filter(throughput > 500, N50 > 59) %>% 
+    select(-data) %>% 
+    arrange(-N50) %>% 
+    knitr::kable(digits = 2, caption = "Runs with N50 > 65Kb and throughput > 400Mb. The `high_precip` Run was performed across flowcells on the two dates. The N50 and throughput were calculated using data from both dates. ")
+```
+
+# Coverage Comparison
+
+```{r eval = FALSE}
+# Coverage plots for all runs. 
+cov_plot <- function(data){
+    plt <- data %>% 
+        mutate(cov_pct = coverage/max(cum_coverage)) %>% 
+        ggplot() + 
+        geom_path(aes(x = length_bins/1000, y = cum_coverage)) +
+            geom_point(aes(x = length_bins/1000, y = cum_coverage)) + 
+            geom_text(aes(x = length_bins/1000, y = cum_coverage, 
+                          label = signif(coverage,2)), nudge_x = 15, nudge_y = 0.4) + 
+            geom_text(aes(x = length_bins/1000, y = cum_coverage, 
+                          label = signif(cov_pct,2)*100), nudge_x = 15, nudge_y = 0.25) + 
+            geom_text(aes(x = length_bins/1000, y = cum_coverage, 
+                          label = n_reads), nudge_x = 15, nudge_y = 0.1) + 
+            theme_bw() + 
+            labs(x = "Read Length (Kb)", y = "Coverage by Reads > length")
+    return(plt)
+}
+
+run_metrics_df %>% 
+    mutate(panel = map_plot(data, ~cov_plot(.))) %>%
+  trelliscope(name = "Coverage By Read Length", nrow = 2, ncol = 2, 
+              self_contained = TRUE)
+```
+
+```{r fig.cap = "Coverage distribution plots for run with high throughput and N50", eval = FALSE}
+run_metrics_df %>% 
+    filter(throughput > 500, N50 > 59, Date != ymd("2018-06-04")) %>%
+    unnest() %>% 
+ggplot() + 
+    geom_path(aes(x = length_bins/1000, y = cum_coverage)) +
+    geom_point(aes(x = length_bins/1000, y = cum_coverage, 
+               color = lab, shape = platform)) + 
+    theme_bw() + 
+    labs(x = "Read Length (Kb)", y = "Coverage by Reads > length") + 
+    facet_wrap(~Run)
+```
+
+
+```{r fig.cap = "Prometion run coverage. Text coverage by length bin, percent of run total, and number of reads."}
+run_metrics_df %>% 
+    filter(str_detect(Run, "Prom")) %>%
+    unnest() %>% 
+    mutate(cov_pct = coverage/max(cum_coverage)) %>% 
+ggplot() + 
+    geom_path(aes(x = length_bins/1000, y = cum_coverage)) +
+    geom_point(aes(x = length_bins/1000, y = cum_coverage)) + 
+    geom_text(aes(x = length_bins/1000, y = cum_coverage, 
+                  label = signif(coverage,2)), nudge_x = 15, nudge_y = 0.4) + 
+    geom_text(aes(x = length_bins/1000, y = cum_coverage, 
+                  label = signif(cov_pct,2)*100), nudge_x = 15, nudge_y = 0.25) + 
+    geom_text(aes(x = length_bins/1000, y = cum_coverage, 
+                  label = n_reads), nudge_x = 15, nudge_y = 0.1) + 
+    theme_bw() + 
+    labs(x = "Read Length (Kb)", y = "Coverage by Reads > length")
+```
+
+
+```{r fig.cap = "Total coverage across all runs. Text coverage by length bin, percent of run total, and number of reads (1k)."}
+total_summary <-  run_metrics_df %>% 
+  filter(!is.na(N50)) %>% 
+    unnest() %>% 
+    group_by(length_bins) %>% 
+    summarise(coverage = sum(coverage), 
+              n_reads = sum(n_reads),
+              cum_coverage = sum(cum_coverage)) %>% 
+    mutate(cov_pct = coverage/max(cum_coverage))
+
+ggplot(total_summary) + 
+    geom_path(aes(x = length_bins/1000, y = cum_coverage)) +
+    geom_point(aes(x = length_bins/1000, y = cum_coverage)) + 
+    # geom_text(aes(x = length_bins/1000, y = cum_coverage, 
+    #               label = signif(coverage,2)), 
+    #           nudge_x = 17, nudge_y = 2.2) + 
+    # geom_text(aes(x = length_bins/1000, y = cum_coverage, 
+    #               label = paste0(signif(cov_pct,2)*100,"%")), 
+    #           nudge_x = 15, nudge_y = 1.3) + 
+    # geom_text(aes(x = length_bins/1000, y = cum_coverage, 
+    #               label = round(n_reads/1000,1)), 
+    #           nudge_x = 15, nudge_y = 0.5) + 
+    theme_bw() + 
+    labs(x = "Read Length (Kb)", y = "Coverage by Reads > length")
+ggsave("ont_read_length_coverage.pdf",width = 4, height = 3)
+```
+
+```{r}
+aln_stat_df %>% 
+    filter(aln_lengthmax > 500000) %>% 
+    ggplot() + 
+    geom_histogram(aes(x = aln_lengthmax/100000)) + 
+    theme_bw() + 
+    labs(x = "Read Length (100kb)", y = "Number of Reads") + 
+  ggtitle("Reads greater than 500kb")
+ggsave("ont_read_length.pdf",width = 2, height = 3)
+```
+
+```{r}
+aln_stat_df %>% filter(aln_lengthmax > 1000000) %>% 
+  ggplot() + 
+    geom_histogram(aes(x = aln_lengthmax/100000)) + 
+    theme_bw() + 
+    labs(x = "Read Length (100kb)", y = "Number of Reads") + 
+  ggtitle("Reads greater than 1MB")
+``` 
+
+```{r}
+aln_stat_df %>% 
+  ungroup() %>% 
+  arrange(-aln_lengthmax) %>% 
+    top_n(10,wt = aln_lengthmax) %>% 
+    select(Run, aln_lengthmax) %>% 
+    mutate(aln_lengthmax = formatC(aln_lengthmax, 
+                                format="d", 
+                                big.mark=",")) %>% 
+    knitr::kable(align = c("l","r"))
+```
+
+```{r}
+run_metrics_df %>% 
+  filter(is.na(N50))
+```
+
+
+
+```{r fig.cap = "Distribution coverage metrics and number of reads by read length bins. Coverage percent (cov_pct) is the percent of run total coverage for reads in a bin. Coverage is genome coverage by read length bin. Cumulative coverage is genome coverage by reads longer than read bin. Number of reads (n_reads) is the number of reads in each read bin."}
+long_bin_metrics <- run_metrics_df %>% 
+  filter(!is.na(N50)) %>% 
+    unnest() %>% 
+    mutate(cov_pct = coverage/max(cum_coverage)*100) %>% 
+    select(lab, platform, Run, length_bins, 
+           coverage, cum_coverage, cov_pct, n_reads) %>% 
+    gather("metric","value", -lab, -platform, -Run, -length_bins) 
+
+ggplot(long_bin_metrics) +
+    geom_boxplot(aes(x = factor(length_bins), y = value, fill = lab)) +
+    scale_y_log10() + 
+    theme_bw() + 
+    facet_wrap(~metric, scales = "free_y")
+```
+
+
+```{r fig.cap = "Distribution coverage metrics and number of reads by read length bins for last 10 runs from each lab. Coverage percent (cov_pct) is the percent of run total coverage for reads in a bin. Coverage is genome coverage by read length bin. Cumulative coverage is genome coverage by reads longer than read bin. Number of reads (n_reads) is the number of reads in each read bin."}
+long_bin_metrics <- run_metrics_df %>% 
+  filter(!is.na(N50)) %>% 
+    group_by(lab) %>% 
+    top_n(10, wt = Date) %>% 
+    unnest() %>% 
+    mutate(cov_pct = coverage/max(cum_coverage)*100) %>% 
+    select(lab, platform, Run, length_bins, 
+           coverage, cum_coverage, cov_pct, n_reads) %>% 
+    gather("metric","value", -lab, -platform, -Run, -length_bins) 
+
+ggplot(long_bin_metrics) +
+    geom_boxplot(aes(x = factor(length_bins), y = value, fill = lab)) +
+    scale_y_log10() + 
+    theme_bw() + 
+    facet_wrap(~metric, scales = "free_y")
+```
+
+# Run Metrics
+ 
+```{r}
+run_metrics_df %>% 
+  filter(!is.na(N50)) %>% 
+    mutate(N50 = signif(N50, 2), throughput = signif(throughput, 3)) %>%
+    unnest() %>% 
+    filter(length_bins == 0) %>% 
+    mutate(`Total Coverage` = signif(cum_coverage,2)) %>% 
+    select(lab, platform, Date, Flowcell, Run, 
+           N50, throughput, `Total Coverage`) %>% 
+    datatable(caption = "Summary metrics for all runs", rownames = FALSE)
+```
