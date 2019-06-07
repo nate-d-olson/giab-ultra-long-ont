@@ -7,3 +7,8 @@
 *.html
 
 .DS_Store
+
+## Log and stats directories
+fastq
+stats
+ONT-pipe-run-logs
