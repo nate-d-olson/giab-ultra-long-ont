@@ -1,9 +1,15 @@
 ---
 title: "ONT Data Processing QC"
-author: "Nate Olson"
-date: "4/2/2019"
-output: html_document
----
+author: "Nate Olson"  
+date: '`r Sys.Date()`'  
+output:  
+  bookdown::html_document2:
+    code_folding: hide  
+    theme: yeti  
+    toc: yes  
+    toc_float: yes  
+---  
+
 ```{r}
 library(tidyverse)
 ```
@@ -54,7 +60,6 @@ fastq_df %>% full_join(fast5_df) %>% filter(is.na(fastq_name)) %>%
 ```
 
 
-
 ## Bam 37 and bam 38 for every fastq 
 - compare aln37_list.txt and aln38_list.txt to fastq_list.txt
 ```{r}
@@ -87,22 +92,59 @@ aln38_df <- read_lines("ONT-pipe-run-logs/pipeline_qc/aln38_list.txt") %>%
            base_name = str_trim(base_name)) 
 ```
 
+## File size check
+```{r}
+## Function to convert file sizes for comparison
+convb <- function(x){
+  ptn <- "(\\d*(.\\d+)*)(.*)"
+  num  <- as.numeric(sub(ptn, "\\1", x))
+  unit <- sub(ptn, "\\3", x)             
+  unit[unit==""] <- "1" 
+
+  mult <- c("1"=1, "K"=1024, "M"=1024^2, "G"=1024^3)
+  num * unname(mult[unit])
+}
+
+file_comp <- fastq_df %>% full_join(fast5_df) %>% 
+  filter(!is.na(fastq_name)) %>% 
+  full_join(aln37_df) %>% 
+  full_join(aln38_df) %>% 
+  mutate(f5_comp_size = convb(fast5_size),
+         fq_comp_size = convb(fastq_size),
+         a37_comp_size = convb(aln37_size),
+         a38_comp_size = convb(aln38_size))
+```
+Noisy file size comparison for f5 and fq files - not sure why...
+```{r}
+file_comp %>% 
+  ggplot() + geom_point(aes(x = f5_comp_size, y = fq_comp_size))
+```
+
+```{r}
+file_comp %>% 
+  ggplot() + geom_point(aes(x = fq_comp_size, y = a37_comp_size))
+```
+
+```{r}
+file_comp %>% 
+  ggplot() + geom_point(aes(x = fq_comp_size, y = a38_comp_size))
+```
+
+```{r}
+file_comp %>% 
+  ggplot() + geom_point(aes(x = a37_comp_size, y = a38_comp_size))
+```
 
 ### Check for missing bam files
 - numerous missing alignment files - need to check directory and rerun pipeline if necessary
 ```{r}
 fastq_df %>% full_join(aln37_df) %>% full_join(aln38_df) %>% 
-     filter(is.na(aln37_name)| is.na(aln38_name)) #%>% 
+     filter(is.na(aln37_name)| is.na(aln38_name), str_detect(base_name, "Ashley", negate = TRUE)) %>% 
    # select(base_name) %>%
   # mutate(base_name = str_remove(base_name, "_[:digit:]{1,2}_[:digit:][:digit:]"),
         #  base_name = str_remove(base_name, "_[:digit:]{1,2}_[:digit:]")) %>%
    #group_by(base_name, aln37_name, aln38_name) %>% 
 #    summarise(count = n())
-```
-
-
-```{r}
-fastq_df %>% full_join(aln37_df) %>% full_join(aln38_df)
 ```
 
 
@@ -115,10 +157,6 @@ fq_pass <- read_tsv("ONT-pipe-run-logs/pipeline_qc/basecalling_rate_info.tsv") %
            total = as.integer(total) - 1) %>%  # subtracting 1 from line count for header
     mutate(pass_rate = pass/(pass + fail))
 ```
-Looks like the parsing issue is related to Ashley fastq summary seqs - may need to rerun
-```{r}
-read_lines("ONT-pipe-run-logs/pipeline_qc/basecalling_rate_info.tsv")[3763:3765]
-```
 
 ```{r}
 fq_pass %>% 
@@ -129,11 +167,6 @@ ggplot() + geom_histogram(aes(x = total)) +
     theme_bw() +
     labs(x = "Number of Sequences", y = "Count")
 ``` 
-
-Low seq numbers to check
-```{r}
-fq_pass %>% filter(total == 0)
-```
 
 ```{r}
 fq_pass  %>% 
@@ -154,7 +187,7 @@ fq_pass  %>%
 - script mapping_rate_info.sh - output mapping_info.txt
 
 ```{r}
-align_raw_df <- read_tsv("ONT-pipe-run-logs/pipeline_qc/mapping_info.txt", 
+align_raw_df <- read_tsv("ONT-pipe-run-logs/pipeline_qc/mapping_rate.txt", 
                      col_names = c("batch_name", "genome","length","n_align","n_not_align")) %>% 
     mutate(genome = if_else(genome == "*", "unaligned", genome))
 n_aligned_df <- align_raw_df %>% filter(genome != "unaligned") %>% 
@@ -165,13 +198,13 @@ align_df <- full_join(n_aligned_df, n_unaligned_df)
 ```
 
 ```{r}
-read_prob_df <- read_tsv("ONT-pipe-run-logs/pipeline_qc/mapping_info.txt", 
+read_prob_df <- read_tsv("ONT-pipe-run-logs/pipeline_qc/mapping_rate.txt", 
                      col_names = c("batch_name", "genome","length","n_align","n_not_align")) %>% 
     problems()
 ```
 
 ```{r}
-read_lines("ONT-pipe-run-logs/pipeline_qc/mapping_info.txt")[read_prob_df$row] %>% 
+read_lines("ONT-pipe-run-logs/pipeline_qc/mapping_rate.txt")[read_prob_df$row] %>% 
     str_remove("/output.*") %>% 
     table()
 ```
@@ -183,21 +216,50 @@ align_df %>% mutate(frac_align = n_align/(n_not_align + n_align)) %>%
 ```
 
 
-## Header check - script get_mapping_header.sh - output mapping_header.txt - need to analyze
+## Read Group check - script get_combined_read_groups.sh - output combined_read_groups.sh 
 Note only has 1500 rows ...
 ```{r}
-map_head_df <- read_lines("ONT-pipe-run-logs/pipeline_qc/mapping_header.txt") %>% 
-    keep(str_detect, "mapping.*out") %>% 
-    enframe(name = NULL) %>% 
-    separate(value, into = c("log_file", "RG", "ID", "PU", "PL", "PM",
-                             "LB", "DT", "PG", "DS", "SM"), sep = "\t")
+read_groups_df <- read_delim("ONT-pipe-run-logs/pipeline_qc/combined_read_groups.txt", 
+                             delim = " ", 
+                             col_names = c("bam_file","RG","ID","PU","PL",
+                                           "PM","LB","DT1","DT2","PG","DS","SM"))
 ```
 
 ```{r}
-map_head_df[c(52, 216),]
+read_groups_df
 ```
 
-Header checks - empty rows, ...
+```{r}
+read_groups_df$ID %>% unique()
+```
 
+```{r}
+read_groups_df$PU %>% unique()
+```
+
+```{r}
+read_groups_df$PL %>% unique()
+```
+
+```{r}
+read_groups_df$PM %>% unique()
+```
+
+```{r}
+read_groups_df$LB %>% unique()
+```
+
+```{r}
+read_groups_df$PG %>% unique()
+```
+
+```{r}
+read_groups_df$DS %>% unique()
+```
+
+```{r}
+read_groups_df$SM %>% unique()
+```
 
 Lines for err and out log files - in pipeline qc page in OneNote
+
