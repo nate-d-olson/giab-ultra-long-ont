@@ -1,0 +1,98 @@
+---
+title: "Nanopore Sequencing Summary"  
+author: "Nate Olson"  
+date: '`r Sys.Date()`'  
+output:  
+  bookdown::html_document2:
+    code_folding: hide  
+    theme: yeti  
+    toc: yes  
+    toc_float: yes  
+---  
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+# Objective
+Generate metadata table for ultra-long ONT release. 
+Run metadata was added to alignment files as part of the bioinformatic pipeline used to process the raw fast5 files. 
+The metadata is therefore extracted from the bam header files. 
+
+# Metadata Table Column Descriptions  
+ID - individual run identifier, generally unique for each flowcell-library combination. Unique ids were defined for each flowcell restart for some of the earlier runs.  
+PU - Platform unit, unique flowcell id  
+PL - Platform, nanopore for all  
+PM - Platform model, MinION, GridION, or PromethION  
+LB - Library (specific DNA extraction)  
+DT - Data run was performed (YYYY-MM-DD)  
+PG - Basecalling algorithm (guppy v2.3.5) and config file.  
+DS_flowcell - ONT flowcell model  
+DS_kit - ONT sequencing kit type  
+SM - Sample, GIAB HG002 for all.  
+
+
+# Reading Header Files
+```{r}
+get_read_group <- function(sam_file, ref_version = "hs37d5"){
+    if (ref_version == "hs37d5") {
+        col_names =  c("RG", "ID", "SM", "LB", "PU", 
+                       "DT", "DS","PL", "PG", "PM")
+    } else if (ref_version == "GRCh38") {
+        col_names = c("RG", "ID", "PU", "PL", "PM", 
+                      "LB", "DT", "PG", "DS", "SM")
+    } else {
+        stop("ref_version should be `hs37d5` or `GRCh38`")
+    }
+    
+    rg_lines <- read_lines(sam_file) %>% 
+        keep(~str_starts(.,"@RG"))
+    rg_lines %>% 
+        enframe(name = "row_num", value = "full_rg") %>%
+        mutate(full_rg = str_remove_all(full_rg, "[:LETTER:][:LETTER:]:")) %>% 
+        separate(
+            col = full_rg,
+            into = col_names,
+            sep = "\t"
+        ) %>% 
+        mutate(DS = str_remove_all(DS, "(Flowcell|kit)=")) %>% 
+        separate(col = DS,
+                 into = c("DS_flowcell", "DS_kit"),
+                 sep = ",") %>% 
+        select(-row_num, -RG)
+}
+
+hs37d5_metadata <- get_read_group("ultra-long-ont_hs37d5_phased_header.sam",
+                                  ref_version = "hs37d5")
+grch38_metadata <- get_read_group("ultra-long-ont_GRCh38_reheader.header.sam", 
+                                  ref_version = "GRCh38")
+```
+```{r}
+
+hs37d5_metadata
+```
+
+```{r}
+grch38_metadata
+```
+
+```{r}
+full_meta <- full_join(hs37d5_metadata, grch38_metadata)
+```
+
+Number of columns and rows should be the same for all three data frames
+```{r}
+all.equal(nrow(full_meta), nrow(hs37d5_metadata), nrow(grch38_metadata))
+```
+
+```{r}
+all.equal(ncol(full_meta), ncol(hs37d5_metadata), ncol(grch38_metadata))
+```
+
+## Writing to file
+```{r}
+write_tsv(grch38_metadata, "run_metadata.tsv")
+```
+
