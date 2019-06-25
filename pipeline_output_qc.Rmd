@@ -49,13 +49,9 @@ fastq_df <- read_lines("ONT-pipe-run-logs/pipeline_qc/fastq_list.txt") %>%
 ```
 
 ### Check for missing fastq files
-
-- missing files likely from old fastq list
-- need to double check `_*_` Ashley files
+Fastq files for all fast5 tar balls
 ```{r}
 fastq_df %>% full_join(fast5_df) %>% filter(is.na(fastq_name)) %>% 
-   # select(base_name) %>%
-   # mutate(base_name = str_remove(base_name, "_[:digit:]{1,2}_[:digit:]")) %>%
     distinct()
 ```
 
@@ -114,7 +110,7 @@ file_comp <- fastq_df %>% full_join(fast5_df) %>%
          a37_comp_size = convb(aln37_size),
          a38_comp_size = convb(aln38_size))
 ```
-Noisy file size comparison for f5 and fq files - not sure why...
+Noisy file size comparison for f5 and fq files - not sure why... or if it matters
 ```{r}
 file_comp %>% 
   ggplot() + geom_point(aes(x = f5_comp_size, y = fq_comp_size))
@@ -136,15 +132,10 @@ file_comp %>%
 ```
 
 ### Check for missing bam files
-- numerous missing alignment files - need to check directory and rerun pipeline if necessary
+No missing alignment files - excluding bams from Ashlay run due to file name formating inconsistencies
 ```{r}
 fastq_df %>% full_join(aln37_df) %>% full_join(aln38_df) %>% 
-     filter(is.na(aln37_name)| is.na(aln38_name), str_detect(base_name, "Ashley", negate = TRUE)) %>% 
-   # select(base_name) %>%
-  # mutate(base_name = str_remove(base_name, "_[:digit:]{1,2}_[:digit:][:digit:]"),
-        #  base_name = str_remove(base_name, "_[:digit:]{1,2}_[:digit:]")) %>%
-   #group_by(base_name, aln37_name, aln38_name) %>% 
-#    summarise(count = n())
+     filter(is.na(aln37_name)| is.na(aln38_name), str_detect(base_name, "Ashley", negate = TRUE))
 ```
 
 
@@ -179,6 +170,7 @@ Basecalling pass rate not correlated with the number of reads per fast5 tar ball
 fq_pass  %>% 
     ggplot() + 
     geom_hex(aes(x = total, y = pass_rate)) +
+  geom_smooth(aes(x = total, y = pass_rate), color = "darkorange") +
     scale_x_log10() + 
     theme_bw()
 ```
@@ -217,16 +209,14 @@ align_df %>% mutate(frac_align = n_align/(n_not_align + n_align)) %>%
 
 
 ## Read Group check - script get_combined_read_groups.sh - output combined_read_groups.sh 
-Note only has 1500 rows ...
+Headers from combined reads are as expected.
 ```{r}
 read_groups_df <- read_delim("ONT-pipe-run-logs/pipeline_qc/combined_read_groups.txt", 
                              delim = " ", 
                              col_names = c("bam_file","RG","ID","PU","PL",
                                            "PM","LB","DT1","DT2","PG","DS","SM"))
-```
-
-```{r}
-read_groups_df
+read_groups_df %>% select(-RG) %>% 
+  DT::datatable()
 ```
 
 ```{r}
@@ -261,5 +251,5 @@ read_groups_df$DS %>% unique()
 read_groups_df$SM %>% unique()
 ```
 
-Lines for err and out log files - in pipeline qc page in OneNote
+## Lines for err and out log files - in pipeline qc page in OneNote
 
