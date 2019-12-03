@@ -1,0 +1,86 @@
+---
+title: "Duplicate Read Evaluation"
+date: '`r Sys.Date()`'  
+output:  
+  bookdown::html_document2:
+    code_folding: hide  
+    theme: yeti  
+    toc: yes  
+    toc_float: yes  
+---  
+
+```{r}
+library(tidyverse)
+```
+
+## Problem
+Justin Zook identified duplicate reads in the ultra-long release when using the phased bam for manual curration. 
+
+## Command line 
+samtools and awk were used to prepare input files for analysis
+
+Duplicate reads first identified using samtools markdup function. 
+`samtools markdup -s -t -@ 6 /Volumes/giab-data/ultra-long-ont_hs37d5_phased_reheader.bam ultra-long-ont_hs37d5_markdup.bam`
+
+Table with duplicate read information generated using 
+`samtools view -f 1024 ultra-long-ont_hs37d5_markdup.bam > dup_reads.sam`
+`awk -F "\t" '{print $1, $2, $3, $4, $12, $13, $14, $15, $16, $17, $18, $19, $20 ,$21, $22, $22, $23, $24, $25}' dup_reads.sam > dup_tbl.tsv`
+
+## Duplicate read check
+```{r}
+
+dup_tbl <- read_delim("dup_tbl.tsv", delim = " ", col_names = FALSE)
+```
+
+
+```{r}
+dbl_tbl_long <- dup_tbl %>% 
+    gather("Xcol", "sam_info",-X1, -X2, -X3, -X4)
+```
+
+
+```{r}
+dbl_tbl_rg <- dbl_tbl_long %>% 
+    filter(str_detect(sam_info, "RG")) %>% 
+    mutate(RG = str_remove(sam_info, "RG:Z:")) %>% 
+    select(-Xcol, -sam_info)
+
+dbl_tbl_do <- dbl_tbl_long %>% 
+    filter(str_detect(sam_info, "do")) %>% 
+    mutate(dup_read = str_remove(sam_info, "do:Z:")) %>% 
+    select(-Xcol, -sam_info)
+
+dbl_tbl_long_rg_do <- left_join(dbl_tbl_rg, dbl_tbl_do)
+```
+
+
+```{r}
+duplicate_reads <- dbl_tbl_long_rg_do %>% 
+    filter(X1 == dup_read) %>% 
+    ## Excluding duplicate rows for multiple matches
+    distinct() %>% 
+  rename(read_id = X1)
+```
+
+Duplicate reads from two runs
+```{r}
+duplicate_reads %>% group_by(RG) %>% summarise(count = n())
+```
+
+## Traking down source/ cause
+Looking at bam stat file
+```{r}
+run_180207DNA2a <- read_tsv("~/Projects/giab-ultra-long-ont/stats/gm24385_180207DNA2a/aln_hs37d5/gm24385_180207DNA2a.combined.sorted.bam.stats.tsv.gz")
+```
+```{r}
+run_180207DNA2a %>% nrow()
+```
+
+
+```{r}
+run_180207DNA2a %>% right_join(duplicate_reads)
+```
+
+```{r}
+run_180207DNA2a %>% anti_join(duplicate_reads)
+```

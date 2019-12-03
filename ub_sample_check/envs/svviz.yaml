@@ -1,0 +1,20 @@
+channels:
+  - r
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.7.3
+  - r=3.6
+  - bioconda::bwa=0.7.17
+  - bioconda::trf=4.09
+  - rpy2=2.9.4
+  - numpy=1.17.3
+  - pandas=0.25.3
+  - pip=19.3.1
+  - pybind11=2.4.3
+  - pyfaidx=0.5.5.2
+  - pysam=0.15.3
+  - tqdm=4.38.0
+  - pip:
+      - git+https://github.com/nspies/genomeview.git@c1ac797642b86f8f411f75f5de68c4a9e6519078
+      - git+git://github.com/nspies/svviz2.git@163bca0dabb8aa53b28e99e2d009710bf8fa99d4
